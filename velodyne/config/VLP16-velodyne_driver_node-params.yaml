@@ -1,0 +1,13 @@
+# TODO: nahraď týmto obsahom svoj existujúci
+# VLP16-velodyne_driver_node-params.yaml (ten, ktorý si doteraz mountoval
+# z /home/mowgli/mowglinext/docker/slam/velodyne/config/).
+#
+# Toto je len minimálny placeholder, aby build/compose nepadal na chýbajúci súbor.
+
+velodyne_driver_node:
+  ros__parameters:
+    device_ip: "192.168.1.201"
+    port: 2368
+    model: VLP16
+    rpm: 600.0
+    frame_id: velodyne

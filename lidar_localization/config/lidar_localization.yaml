@@ -1,0 +1,16 @@
+/**:
+  ros__parameters:
+    # Cesta k mape - MUSÍ sedieť s volume mountom v docker-compose.yaml
+    # (./maps/garden_map na hoste -> /maps/garden_map v kontajneri)
+    map_path: "/maps/garden_map/garden_map.ply"   # uprav podľa skutočného názvu súboru z GLIM-u
+
+    registration_method: "NDT_OMP"   # "NDT" | "GICP" | "NDT_OMP" | "GICP_OMP"
+    score_threshold: 2.0
+    ndt_resolution: 1.5
+    ndt_step_size: 0.1
+    ndt_num_threads: 4
+    transform_epsilon: 0.01
+
+    use_odom: false     # nastav true, ak chceš použiť odometriu (napr. z glim) ako predikciu
+    use_imu: false
+    enable_debug: false

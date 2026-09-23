@@ -1,0 +1,98 @@
+version: "3.8"
+
+# ---------------------------------------------------------------------------
+# Mowgli SLAM stack: velodyne_driver + glim + lidar_localization_ros2
+#
+# Build všetkých images:
+#   docker compose build
+#
+# Beh:
+#   docker compose up velodyne_driver lidar_localization
+#   (glim spúšťaj podľa potreby - pozri README)
+# ---------------------------------------------------------------------------
+
+x-common-ros-env: &common-ros-env
+  CYCLONEDDS_URI: file:///cyclonedds.xml
+  RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+  ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
+  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+
+services:
+
+  velodyne_driver:
+    build:
+      context: ./velodyne
+    image: ${REGISTRY:-}vlp16_dds:latest
+    container_name: velodyne_vlp16
+    network_mode: host
+    environment:
+      <<: *common-ros-env
+    volumes:
+      - ./velodyne/config/VLP16-velodyne_driver_node-params.yaml:/opt/ros/kilted/share/velodyne_driver/config/VLP16-velodyne_driver_node-params.yaml:ro
+      - ./common/cyclonedds.xml:/cyclonedds.xml:ro
+    restart: unless-stopped
+    command: >
+      bash -c "source /opt/ros/kilted/setup.bash &&
+               ros2 launch velodyne velodyne-all-nodes-VLP16-launch.py"
+
+  velodyne_pcap_test:
+    build:
+      context: ./velodyne
+    image: ${REGISTRY:-}vlp16_dds:latest
+    container_name: velodyne_pcap_test
+    network_mode: host
+    environment:
+      <<: *common-ros-env
+    volumes:
+      - ./velodyne/example.pcap:/data/example.pcap:ro
+      - ./velodyne/run_pcap.sh:/opt/run_pcap.sh:ro
+      - ./common/cyclonedds.xml:/cyclonedds.xml:ro
+    profiles: ["test"]     # spustí sa len s: docker compose --profile test up velodyne_pcap_test
+    command: bash /opt/run_pcap.sh
+
+  glim:
+    build:
+      context: ./glim
+    image: ${REGISTRY:-}glim_dds:latest
+    container_name: glim_slam
+    network_mode: host
+    environment:
+      <<: *common-ros-env
+      DISPLAY: ${DISPLAY:-:0}
+      QT_X11_NO_MITSHM: "1"
+      XAUTHORITY: /root/.Xauthority
+      LD_LIBRARY_PATH: /glim_ext_modules
+      GLIM_RELOCALIZATION_CONFIG: /glim/config/config_relocalization.json
+    ipc: host
+    pid: host
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - ./glim/config:/glim/config
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /run/user/1000/gdm/Xauthority:/root/.Xauthority:ro
+      - ./common/cyclonedds.xml:/cyclonedds.xml:ro
+      - ./glim/ext_modules:/glim_ext_modules:ro
+      - ./maps/garden_map:/glim/maps/garden_map:ro
+      - ./glim/dump:/tmp/dump
+    restart: unless-stopped
+    profiles: ["glim"]     # voliteľné - spusti explicitne: docker compose --profile glim up glim
+    command: ros2 run glim_ros glim_rosnode --ros-args -p config_path:=/glim/config
+
+  lidar_localization:
+    build:
+      context: ./lidar_localization
+    image: ${REGISTRY:-}lidarloc_dds:latest
+    container_name: lidar_localization
+    network_mode: host
+    environment:
+      <<: *common-ros-env
+    volumes:
+      - ./lidar_localization/config/lidar_localization.yaml:/opt/lidarloc_ws/param/lidar_localization.yaml:ro
+      - ./maps/garden_map:/maps/garden_map:ro
+      - ./common/cyclonedds.xml:/cyclonedds.xml:ro
+    restart: unless-stopped
+    command: >
+      bash -c "ros2 launch lidar_localization_ros2 lidar_localization.launch.py
+               params_file:=/opt/lidarloc_ws/param/lidar_localization.yaml
+               --ros-args -r /cloud:=/velodyne_points"

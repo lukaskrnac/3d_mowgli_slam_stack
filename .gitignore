@@ -1,0 +1,16 @@
+# Veľké dáta - nemajú čo robiť v git repe
+/maps/**
+!/maps/.gitkeep
+/glim/dump/**
+!/glim/dump/.gitkeep
+/glim/ext_modules/**
+!/glim/ext_modules/.gitkeep
+/velodyne/*.pcap
+
+# Lokálne env
+.env
+
+# Bežný build/OS smetie
+*.log
+__pycache__/
+.DS_Store
