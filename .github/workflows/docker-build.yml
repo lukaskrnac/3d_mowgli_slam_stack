@@ -1,4 +1,4 @@
-name: Build docker images
+name: Build and push docker images (GHCR)
 
 on:
   push:
@@ -7,9 +7,17 @@ on:
     branches: [ "main" ]
   workflow_dispatch: {}
 
+env:
+  REGISTRY: ghcr.io
+  # Obraz sa uloží ako ghcr.io/<owner>/<repo>/<service>
+  IMAGE_BASE: ${{ github.repository }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # potrebné, aby GITHUB_TOKEN smel pushovať do GHCR
     strategy:
       fail-fast: false
       matrix:
@@ -21,20 +29,33 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Voliteľné: login a push do GitHub Container Registry.
-      # Odkomentuj, ak chceš aj publikovať images, nielen overiť že sa buildnú.
-      # - name: Log in to GHCR
-      #   uses: docker/login-action@v3
-      #   with:
-      #     registry: ghcr.io
-      #     username: ${{ github.actor }}
-      #     password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Lowercase image base (Docker tagy nesmú mať veľké písmená)
+        run: echo "IMAGE_BASE=${IMAGE_BASE,,}" >> "$GITHUB_ENV"
 
-      - name: Build ${{ matrix.service }}
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_BASE }}/${{ matrix.service }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      # Na pull request iba zbuildí (bez pushu) - overenie že Dockerfile prejde.
+      # Na push do main aj skutočne pushne do GHCR.
+      - name: Build ${{ matrix.service }} (a push, ak sme na main)
         uses: docker/build-push-action@v6
         with:
           context: ./${{ matrix.service }}
-          push: false
-          tags: ${{ matrix.service }}_dds:ci
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
