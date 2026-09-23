@@ -11,10 +11,10 @@
 #   docker build -t lidarloc_dds:latest ./lidar_localization
 # ---------------------------------------------------------------------------
 
-FROM ros:kilted-ros-base
+FROM ros:jazzy-ros-base
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV ROS_DISTRO=kilted
+ENV ROS_DISTRO=jazzy
 ENV LANG=C.UTF-8
 
 # --- systémové závislosti na build ------------------------------------------------
