@@ -1,16 +1,84 @@
+# lidar_localization_ros2 -> MowgliNext fusion_graph
+#
+# Tento node je pre fusion_graph len ZDROJ MERANÍ:
+#   /pcl_pose          geometry_msgs/PoseWithCovarianceStamped (frame "map", stamp = čas scanu)
+#   /alignment_status  diagnostic_msgs/DiagnosticArray ("lidar_localization_ros2/alignment",
+#                      kľúče failure_category / consecutive_rejected_updates /
+#                      reinitialization_requested)
+# TF strom (map->odom->base_footprint) vlastní VÝHRADNE fusion_graph (REP-105).
+#
+# Parametre, ktoré launch súbor posiela inline (a teda prebíjajú tento YAML), sa
+# nastavujú v docker-compose.yaml cez launch argumenty: enable_map_odom_tf,
+# publish_bridge_pose_when_lost, use_imu_preintegration, frame id-čka, cloud_topic.
+
 /**:
   ros__parameters:
-    # Cesta k mape - MUSÍ sedieť s volume mountom v docker-compose.yaml
-    # (./maps/garden_map na hoste -> /maps/garden_map v kontajneri)
-    map_path: "/maps/garden_map/garden_map.ply"   # uprav podľa skutočného názvu súboru z GLIM-u
+    # --- TF: VYPNUTÉ (patch 0001-add-publish_tf-parameter.patch) -------------
+    # false = žiadny sendTransform (ani map->base_link, ani map->odom).
+    publish_tf: false
+    enable_map_odom_tf: false
+    global_frame_id: "map"        # musí presne sedieť s fusion_graph map_frame
+    base_frame_id: "base_link"
 
+    # --- výstup /pcl_pose -----------------------------------------------------
+    # Publikovať iba akceptované matche, stampnuté časom scanu:
+    #  - timer publishing by stampoval now() a opakoval starú pózu -> vypnuté
+    #  - bridge pose (odom-only predikcia počas výpadku) -> vypnuté; fusion_graph
+    #    má vlastnú odometriu, nepotrebuje od nás "vymyslené" pózy
+    enable_timer_publishing: false
+    publish_bridge_pose_when_lost: false
+    reject_above_score_threshold: true
+
+    # Kovariancia z fitness skóre (error-floor model, diagonálna, PSD):
+    #   std = clamp(floor + per_fitness * fitness, floor, max)
+    # Akceptované matche majú fitness <= score_threshold (2.0), teda
+    #   xy sigma  0.15 .. 0.35 m   (fusion_graph zahadzuje nad ~0.75 m)
+    #   yaw sigma 2 .. 4 deg
+    pose_covariance_mode: "error_floor"
+    covariance_xy_floor_std_m: 0.15
+    covariance_xy_std_per_fitness_m: 0.1
+    covariance_xy_max_std_m: 5.0
+    covariance_z_floor_std_m: 0.3
+    covariance_yaw_floor_std_deg: 2.0
+    covariance_yaw_std_per_fitness_deg: 1.0
+    covariance_yaw_max_std_deg: 30.0
+    covariance_roll_pitch_floor_std_deg: 1.5
+
+    # --- mapa -----------------------------------------------------------------
+    # MUSÍ to byť VÝSTUP align_glim_map.py (ENU, dok = 0,0), NIE surová GLIM mapa
+    # z glim_dump. Adresár sa mountuje v docker-compose.yaml (-> /maps).
+    use_pcd_map: true             # true = načítaj map_path (.pcd aj .ply)
+    map_path: "/maps/garden_map_aligned.ply"
+
+    # --- inicializácia: robot štartuje v doku = origin mapy --------------------
+    # Yaw doku v ENU (quaternion okolo Z). Uprav, ak dok nesmeruje na východ.
+    set_initial_pose: true
+    initial_pose_x: 0.0
+    initial_pose_y: 0.0
+    initial_pose_z: 0.0
+    initial_pose_qx: 0.0
+    initial_pose_qy: 0.0
+    initial_pose_qz: 0.0
+    initial_pose_qw: 1.0
+
+    # --- registrácia ----------------------------------------------------------
     registration_method: "NDT_OMP"   # "NDT" | "GICP" | "NDT_OMP" | "GICP_OMP"
     score_threshold: 2.0
-    ndt_resolution: 1.5
+    ndt_resolution: 1.0
     ndt_step_size: 0.1
     ndt_num_threads: 4
+    ndt_max_iterations: 35
     transform_epsilon: 0.01
+    voxel_leaf_size: 0.2
+    scan_min_range: 0.5             # vlastné telo kosačky
+    scan_max_range: 60.0
+    scan_period: 0.1                # VLP16 @ 600 rpm
+    predict_pose_from_previous_delta: true
 
-    use_odom: false     # nastav true, ak chceš použiť odometriu (napr. z glim) ako predikciu
+    # --- zdravie / re-init (-> /alignment_status) -----------------------------
+    enable_reinitialization_request_output: true
+    enable_reinitialization_request_latch: true
+
+    use_odom: false
     use_imu: false
     enable_debug: false

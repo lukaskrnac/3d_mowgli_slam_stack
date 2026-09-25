@@ -20,9 +20,14 @@ pomocou `VLP16` skenov a [rsasaki0109/lidar_localization_ros2](https://github.co
 │   ├── ext_modules/             # libglim_relocalization.so a pod. (negitované, veľké binárky)
 │   └── dump/                    # výstupné mapy z GLIM po ukončení behu
 ├── lidar_localization/
-│   ├── Dockerfile               # image pre lidar_localization_ros2 (hotový, buildí sa zo zdroja)
-│   └── config/
-│       └── lidar_localization.yaml
+│   ├── Dockerfile               # lidar_localization_ros2 (pinnutý commit + patche)
+│   ├── patches/                 # patche na upstream (0001: parameter publish_tf)
+│   ├── config/
+│   │   └── lidar_localization.yaml  # /pcl_pose + /alignment_status pre fusion_graph, TF vypnutý
+│   └── tools/
+│       └── check_fusion_contract.py # overenie topicov voči kontraktu fusion_graph
+├── docs/
+│   └── ZADANIE_fusion_graph.md  # kontrakt s MowgliNext fusion_graph (pôvodné zadanie)
 ├── maps/                        # sem patrí .ply mapa z GLIM-u (negitované, veľké súbory)
 └── .github/workflows/
     └── docker-build.yml         # CI - overí, že sa všetky 3 images zbuildia
@@ -76,9 +81,40 @@ docker compose --profile glim up glim
 - Všetky služby bežia s `network_mode: host` a rovnakým `ROS_DOMAIN_ID`
   (nastaviteľné cez `.env`, pozri `ROS_DOMAIN_ID=` premennú v `docker-compose.yaml`),
   aby DDS discovery cez multicast fungoval bez ďalšej konfigurácie na jednom stroji.
-- `lidar_localization` očakáva vstupný cloud na topicu `/cloud` - v `command:`
-  je preto remap `-r /cloud:=/velodyne_points`. Ak tvoj velodyne launch
-  publikuje pod iným názvom, uprav remap.
+- `lidar_localization` berie vstupný cloud z `/velodyne_points` (launch argument
+  `cloud_topic:=` v `command:`). Ak tvoj velodyne launch publikuje pod iným názvom,
+  uprav ho tam.
 - CI (`.github/workflows/docker-build.yml`) len overuje, že sa images zbuildia
   (bez pushu). Pre publikovanie do registry (napr. GHCR) odkomentuj login/push
   kroky vo workflowe.
+
+## Integrácia s MowgliNext fusion_graph
+
+Kontrakt: [docs/ZADANIE_fusion_graph.md](docs/ZADANIE_fusion_graph.md). Tento stack len
+**dodáva merania**, TF strom (`map → odom → base_footprint`) vlastní výhradne `fusion_graph`.
+
+| Výstup | Kto | Stav |
+|---|---|---|
+| žiadny TF | `lidar_localization` | upstream vypínač nemá (s `enable_map_odom_tf: false` posiela `map → base_link`, s `true` posiela `map → odom`), preto patch `0001` pridáva `publish_tf`, v configu `false` (overené: 0 správ na `/tf`; s `true` ide `map -> base_link`) |
+| `/pcl_pose` | `lidar_localization` | frame `map`, stamp = čas scanu, len akceptované matche, kovariancia z fitness (`error_floor`: XY σ 0.15–0.35 m, yaw σ 2–4° pri akceptovanom matchi) |
+| `/alignment_status` | `lidar_localization` | upstream už publikuje `lidar_localization_ros2/alignment` s `failure_category` (`healthy`/`missing_map`/`missing_initial_pose`/`weak_overlap`/`bad_match`/`stale_prediction`/`overload`), `consecutive_rejected_updates`, `reinitialization_requested` pri každom scane |
+
+Pred nasadením:
+
+1. **Mapa:** do `/home/mowgli/mowglinext/docker/slam/maps/` daj výstup `align_glim_map.py`
+   (ENU, dok = 0,0) ako `garden_map_aligned.ply`, nie surovú mapu z `glim_dump`.
+2. **Yaw doku:** `initial_pose_q*` v `config/lidar_localization.yaml` (default 0° = východ).
+3. **TF `base_link → velodyne`:** lokalizácia ho potrebuje. Ak ho MowgliNext URDF
+   neobsahuje, nastav `LIDAR_TF_PUBLISH=true` (+ `LIDAR_TF_X/Y/Z`) v `.env`.
+4. **Sieť:** všetky služby majú `network_mode: host`, `ROS_DOMAIN_ID=0`, `rmw_cyclonedds_cpp`
+   a mountujú ten istý `cyclonedds.xml` ako hlavný `mowgli` kontajner.
+
+Spustenie a overenie:
+
+```bash
+docker compose up -d velodyne_driver lidar_localization
+docker exec -it lidar_localization python3 /opt/tools/check_fusion_contract.py --duration 10 --tf
+```
+
+Pri úspechu `check_fusion_contract.py` vypíše na konci `OK`. V zozname `/tf` hrán majú byť
+len hrany od MowgliNext (`map -> odom`, `odom -> base_footprint`), nič z tohto stacku.
