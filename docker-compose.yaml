@@ -100,13 +100,13 @@ services:
     # Kým sú všade nuly, /pcl_pose je poloha lidaru, nie base_link.
     command: >
       bash -c "ros2 launch /opt/mowgli_launch/mowgli_lidar_localization.launch.py
-               tf_topic:=/lidar_localization/tf
-               enable_map_odom_tf:=false
-               publish_lidar_tf:=true
-               lidar_frame_id:=velodyne
-               lidar_tf_x:=${LIDAR_TF_X:-0.0}
-               lidar_tf_y:=${LIDAR_TF_Y:-0.0}
-               lidar_tf_z:=${LIDAR_TF_Z:-0.0}
-               lidar_tf_roll:=${LIDAR_TF_ROLL:-0.0}
-               lidar_tf_pitch:=${LIDAR_TF_PITCH:-0.0}
-               lidar_tf_yaw:=${LIDAR_TF_YAW:-0.0}"
+      tf_topic:=/lidar_localization/tf
+      enable_map_odom_tf:=false
+      publish_lidar_tf:=true
+      lidar_frame_id:=velodyne
+      lidar_tf_x:=${LIDAR_TF_X:-0.0}
+      lidar_tf_y:=${LIDAR_TF_Y:-0.0}
+      lidar_tf_z:=${LIDAR_TF_Z:-0.0}
+      lidar_tf_roll:=${LIDAR_TF_ROLL:-0.0}
+      lidar_tf_pitch:=${LIDAR_TF_PITCH:-0.0}
+      lidar_tf_yaw:=${LIDAR_TF_YAW:-0.0}"
