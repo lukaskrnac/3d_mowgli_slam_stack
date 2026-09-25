@@ -91,6 +91,22 @@ services:
       - /home/mowgli/mowglinext/docker/slam/config:/opt/lidarloc_ws/install/lidar_localization_ros2/share/lidar_localization_ros2/param:ro
       - /home/mowgli/mowglinext/docker/slam/glim_dump:/maps/garden_map:ro
       - /home/mowgli/mowglinext/docker/config/cyclonedds.xml:/cyclonedds.xml:ro
+      # Upravený launch: TF výstup ide na /lidar_localization/tf (nie /tf), aby
+      # nekolidoval s map -> odom z fusion_graph v MowgliNext. Pozri hlavičku súboru.
+      - ./lidar_localization/launch/mowgli_lidar_localization.launch.py:/opt/mowgli_launch/mowgli_lidar_localization.launch.py:ro
     restart: unless-stopped
+    # Extrinzika base_link -> velodyne (statický TF, ide na /tf_static).
+    # Hodnoty nastav v .env podľa reálnej montáže VLP16 (pozri .env.example).
+    # Kým sú všade nuly, /pcl_pose je poloha lidaru, nie base_link.
     command: >
-      bash -c "ros2 launch lidar_localization_ros2 lidar_localization.launch.py"
+      bash -c "ros2 launch /opt/mowgli_launch/mowgli_lidar_localization.launch.py
+               tf_topic:=/lidar_localization/tf
+               enable_map_odom_tf:=false
+               publish_lidar_tf:=true
+               lidar_frame_id:=velodyne
+               lidar_tf_x:=${LIDAR_TF_X:-0.0}
+               lidar_tf_y:=${LIDAR_TF_Y:-0.0}
+               lidar_tf_z:=${LIDAR_TF_Z:-0.0}
+               lidar_tf_roll:=${LIDAR_TF_ROLL:-0.0}
+               lidar_tf_pitch:=${LIDAR_TF_PITCH:-0.0}
+               lidar_tf_yaw:=${LIDAR_TF_YAW:-0.0}"

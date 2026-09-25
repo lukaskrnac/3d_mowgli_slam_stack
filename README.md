@@ -79,6 +79,22 @@ docker compose --profile glim up glim
 - `lidar_localization` očakáva vstupný cloud na topicu `/cloud` - v `command:`
   je preto remap `-r /cloud:=/velodyne_points`. Ak tvoj velodyne launch
   publikuje pod iným názvom, uprav remap.
+- **TF a MowgliNext:** `lidar_localization` sa spúšťa cez
+  `lidar_localization/launch/mowgli_lidar_localization.launch.py` (kópia upstream
+  launchu + remap `/tf` → `/lidar_localization/tf`). Nepublikuje teda žiadny
+  `map → ...` TF, jediný `map → odom` je z `fusion_graph`. Výstup pre fusion je
+  `/pcl_pose` a `/alignment_status`. Beží v Mode A (`enable_map_odom_tf:=false`);
+  Mode B s týmto remapom nefunguje.
+- **Extrinzika lidaru:** statický `base_link → velodyne` publikuje ten istý launch
+  (na `/tf_static`). Hodnoty sa berú z `.env` (`LIDAR_TF_X` … `LIDAR_TF_YAW`,
+  meraj od `base_link` = stred kolesovej osi). Nechaj ich len na jednom mieste. Ak
+  raz pridáš VLP16 do URDF MowgliNext, daj tu `publish_lidar_tf:=false`.
+- Overenie po štarte:
+  ```bash
+  ros2 topic info /tf -v | grep lidar_localization   # nesmie nič vypísať
+  ros2 run tf2_ros tf2_echo base_link velodyne         # reálna montáž, nie nuly
+  ros2 run tf2_ros tf2_echo map odom                   # iba z fusion_graph
+  ```
 - CI (`.github/workflows/docker-build.yml`) len overuje, že sa images zbuildia
   (bez pushu). Pre publikovanie do registry (napr. GHCR) odkomentuj login/push
   kroky vo workflowe.
