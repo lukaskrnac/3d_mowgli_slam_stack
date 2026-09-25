@@ -85,14 +85,16 @@ docker compose --profile glim up glim
   `map → ...` TF, jediný `map → odom` je z `fusion_graph`. Výstup pre fusion je
   `/pcl_pose` a `/alignment_status`. Beží v Mode A (`enable_map_odom_tf:=false`);
   Mode B s týmto remapom nefunguje.
-- **Extrinzika lidaru:** statický `base_link → velodyne` publikuje ten istý launch
-  (na `/tf_static`). Hodnoty sa berú z `.env` (`LIDAR_TF_X` … `LIDAR_TF_YAW`,
-  meraj od `base_link` = stred kolesovej osi). Nechaj ich len na jednom mieste. Ak
-  raz pridáš VLP16 do URDF MowgliNext, daj tu `publish_lidar_tf:=false`.
+- **Extrinzika lidaru:** jediný zdroj je MowgliNext: URDF `base_link → lidar_link`
+  (`robot_state_publisher`, `/tf_static`), hodnoty `lidar_x/y/z/yaw` v nainštalovanom
+  `mowgli_robot.yaml`. Merajú sa od `base_link` (stred kolesovej osi). Preto:
+  VLP16 publikuje s `frame_id: lidar_link` a `lidar_localization` beží s
+  `publish_lidar_tf:=false`, `lidar_frame_id:=lidar_link`.
 - Overenie po štarte:
   ```bash
   ros2 topic info /tf -v | grep lidar_localization   # nesmie nič vypísať
-  ros2 run tf2_ros tf2_echo base_link velodyne         # reálna montáž, nie nuly
+  ros2 run tf2_ros tf2_echo base_link lidar_link       # montáž VLP16 z mowgli_robot.yaml
+  ros2 topic echo /velodyne_points --field header.frame_id --once   # lidar_link
   ros2 run tf2_ros tf2_echo map odom                   # iba z fusion_graph
   ```
 - CI (`.github/workflows/docker-build.yml`) len overuje, že sa images zbuildia

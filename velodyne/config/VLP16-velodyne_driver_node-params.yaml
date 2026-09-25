@@ -10,4 +10,6 @@ velodyne_driver_node:
     port: 2368
     model: VLP16
     rpm: 600.0
-    frame_id: velodyne
+    # lidar_link = frame z URDF MowgliNext (base_link -> lidar_link), aby extrinziku
+    # definoval iba MowgliNext. Zmeň to aj v súbore na kosačke, ktorý compose mountuje.
+    frame_id: lidar_link
