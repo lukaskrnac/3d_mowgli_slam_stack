@@ -98,9 +98,14 @@ services:
     # Extrinziku base_link -> lidar_link publikuje MowgliNext (URDF, robot_state_publisher,
     # hodnoty lidar_x/y/z/yaw v mowgli_robot.yaml). Tu sa preto žiadny statický TF
     # nepublikuje a VLP16 musí mať frame_id: lidar_link.
+    # global_frame_id:=lidar_map — lokalizácia beží vo vlastnom rámci GLIM mapy;
+    # MowgliNext (fusion_graph) ju prepočíta do `map` podľa kalibrácie
+    # /calibrate_lidar_map_node (docs/LIDAR_MAP_CALIBRATION.md vo forku).
+    # /initialpose preto posielaj vo frame lidar_map.
     command: >
       bash -c "ros2 launch /opt/mowgli_launch/mowgli_lidar_localization.launch.py
       tf_topic:=/lidar_localization/tf
       enable_map_odom_tf:=false
       publish_lidar_tf:=false
-      lidar_frame_id:=lidar_link"
+      lidar_frame_id:=lidar_link
+      global_frame_id:=lidar_map"

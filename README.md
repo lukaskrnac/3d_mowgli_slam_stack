@@ -85,6 +85,10 @@ docker compose --profile glim up glim
   `map → ...` TF, jediný `map → odom` je z `fusion_graph`. Výstup pre fusion je
   `/pcl_pose` a `/alignment_status`. Beží v Mode A (`enable_map_odom_tf:=false`);
   Mode B s týmto remapom nefunguje.
+- **Rámec mapy:** `lidar_localization` publikuje `/pcl_pose` vo frame `lidar_map`
+  (vlastný rámec GLIM mapy). Prevod do `map` MowgliNext rieši kalibráciou
+  `ros2 service call /calibrate_lidar_map_node/start std_srvs/srv/Trigger`
+  (jazda pod RTK-Fixed). `/initialpose` posielaj vo frame `lidar_map`.
 - **Extrinzika lidaru:** jediný zdroj je MowgliNext: URDF `base_link → lidar_link`
   (`robot_state_publisher`, `/tf_static`), hodnoty `lidar_x/y/z/yaw` v nainštalovanom
   `mowgli_robot.yaml`. Merajú sa od `base_link` (stred kolesovej osi). Preto:
