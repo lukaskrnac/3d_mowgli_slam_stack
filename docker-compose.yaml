@@ -72,10 +72,27 @@ services:
       # NOVÉ - referenčná (prebuilt) mapa, na ktorú sa modul relokalizuje.
       # Cesta VPRAVO musí presne sedieť s "map_path" v config_relocalization.json!
       - /home/mowgli/mowglinext/docker/slam/glim_maps/garden_map:/glim/maps/garden_map:ro
-      # cesta ku ulozenej mape po ukoncieni
-      - /home/mowgli/mowglinext/docker/slam/glim_dump:/tmp/dump
+      # Každé mapovanie = nový priečinok glim_sessions/mapping_<dátum_čas>/.
+      # Sem ukladaj aj spojené mapy z offline viewera (Save Map), objavia sa v GUI.
+      - /home/mowgli/mowglinext/docker/slam/glim_sessions:/glim/sessions
+      # Aktívna mapa pre lidar_localization (ten istý priečinok má lokalizátor
+      # ako /maps/garden_map). Zapisuje sem LEN export z GUI; predchádzajúca
+      # mapa ostane ako garden_map.backup-<dátum_čas>.ply.
+      # Pozor: už NIE /tmp/dump — dump tu prepisoval mapu lokalizátora.
+      - /home/mowgli/mowglinext/docker/slam/glim_dump:/glim/active_map
     restart: unless-stopped
-    command: ros2 run glim_ros glim_rosnode --ros-args -p config_path:=/glim/config
+    # docker stop počas mapovania: supervisor nechá GLIM uložiť dump, na to
+    # treba viac ako predvolených 10 s.
+    stop_grace_period: 3m
+    # Supervisor (glim/supervisor/glim_supervisor.py). GLIM sám nebeží, kým ho
+    # nespustíš z GUI (Diagnostika → Kalibrácia → Mapovanie GLIM) alebo:
+    #   ros2 service call /glim_supervisor/start_mapping std_srvs/srv/Trigger
+    command: >
+      python3 /opt/glim_supervisor/glim_supervisor.py --ros-args
+      -p config_path:=/glim/config
+      -p sessions_dir:=/glim/sessions
+      -p active_map_path:=/glim/active_map/garden_map.ply
+      -p keep_backups:=3
 
 
   lidar_localization:
