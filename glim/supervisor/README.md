@@ -26,9 +26,14 @@ nikdy nemení.
 2. **Ukončiť a uložiť**: supervisor pošle GLIM-u SIGINT a počká, kým dokončí
    optimalizáciu a zapíše dump (stav *saving*).
 3. **Spojenie viacerých relácií** (voliteľné): *Otvoriť vo vieweri* pri prvej
-   relácii, v okne *File → Open Additional Map* pridaj ďalšie (v dialógu
-   Ctrl+L a napíš `/glim/sessions/<názov>`), potom *File → Save → Save Map*
-   do `/glim/sessions/<nový_názov>`. Po zatvorení viewera sa objaví v zozname.
+   relácii. Supervisor pri tom vytvorí prázdny priečinok
+   `/glim/sessions/merged_<dátum_čas>` a nastaví dialógy viewera (cez jeho
+   „recent files“ v `/tmp/tmp_recent_files.ini`), takže:
+   - *File → Open Additional Map* sa otvorí v `/glim/sessions`,
+   - *File → Save → Save Map* sa otvorí rovno na pripravenom priečinku, stačí potvrdiť.
+
+   Po zatvorení viewera sa uložená mapa objaví v zozname ako nová relácia
+   (typ *merged*). Ak si do priečinka nič neuložil, prázdny sa zmaže.
 4. **Použiť ako mapu**: export relácie do `garden_map.ply` (bez okien, bez
    ďalšej optimalizácie). Stará mapa ide do zálohy.
 5. Lokalizátor načíta novú mapu až po reštarte (`docker restart lidar_localization`)

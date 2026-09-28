@@ -38,6 +38,11 @@ FAKE = textwrap.dedent("""
             sys.exit(1)
         open(out, "w").write("ply " + args[0])
         sys.exit(0)
+    if os.environ.get("FAKE_SAVE_INI"):             # "Save Map" into the seeded folder
+        for line in open(os.environ["FAKE_SAVE_INI"]):
+            if line.startswith("offline_viewer_save="):
+                target = line.split("=", 1)[1].split(";")[0]
+                open(os.path.join(target, "graph.bin"), "w").write("merged")
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # interactive viewer
     while True:
         time.sleep(0.02)
@@ -58,10 +63,11 @@ class SupervisorTest(unittest.TestCase):
             keep_backups=2,
             mapping_cmd=[sys.executable, fake],
             viewer_cmd=[sys.executable, fake],
+            recent_files_ini=os.path.join(root, "recent_files.ini"),
         )
         self.changes = 0
         self.sup = gs.Supervisor(self.cfg, on_change=self._changed)
-        for k in ("FAKE_CRASH", "FAKE_EXPORT_FAIL"):
+        for k in ("FAKE_CRASH", "FAKE_EXPORT_FAIL", "FAKE_SAVE_INI"):
             os.environ.pop(k, None)
 
     def tearDown(self):
@@ -137,6 +143,40 @@ class SupervisorTest(unittest.TestCase):
         self.assertFalse(self.sup.start_mapping()[0])
         self.assertTrue(self.sup.close_viewer()[0])
         self.wait_state("idle")
+
+    def test_viewer_prepares_save_folder_and_seeds_dialogs(self):
+        self.make_session("a")
+        with open(self.cfg.recent_files_ini, "w") as f:
+            f.write("offline_viewer_save=/tmp/dump;\nother_tag=/x;\n")
+        ok, _ = self.sup.open_viewer("a")
+        self.assertTrue(ok)
+        st = self.sup.status(rescan_s=0)
+        target = st["save_target"]
+        self.assertTrue(os.path.isdir(target))
+        self.assertTrue(os.path.basename(target).startswith("merged_"))
+        self.assertNotIn(os.path.basename(target), [s["name"] for s in st["sessions"]])
+        ini = open(self.cfg.recent_files_ini).read()
+        self.assertIn(f"offline_viewer_save={target};/tmp/dump;", ini)
+        self.assertIn("offline_viewer_open=" + self.cfg.sessions_dir + "/;", ini)
+        self.assertIn("other_tag=/x;", ini)
+        # Closed without saving: the empty folder is removed again.
+        self.sup.close_viewer()
+        self.wait_state("idle")
+        self.assertFalse(os.path.exists(target))
+
+    def test_viewer_save_becomes_merged_session(self):
+        self.make_session("a")
+        os.environ["FAKE_SAVE_INI"] = self.cfg.recent_files_ini
+        self.assertTrue(self.sup.open_viewer("a")[0])
+        target = self.sup.status()["save_target"]
+        time.sleep(0.3)
+        self.sup.close_viewer()
+        st = self.wait_state("idle")
+        name = os.path.basename(target)
+        self.assertIn(name, st["message"])
+        merged = [s for s in self.sup.status(rescan_s=0)["sessions"] if s["name"] == name][0]
+        self.assertEqual(merged["kind"], "merged")
+        self.assertTrue(merged["complete"])
 
     def test_export_installs_map_and_keeps_backups(self):
         self.make_session("a")

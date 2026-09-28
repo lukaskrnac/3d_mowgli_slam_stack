@@ -67,6 +67,14 @@ STATE_VIEWER = "viewer"
 STATE_EXPORTING = "exporting"
 STATE_ERROR = "error"  # last run failed; behaves like idle
 
+# GLIM's offline viewer takes the start folder of its file dialogs from the
+# "recent files" list of iridescence (guik::RecentFiles), stored in this ini
+# file inside the container: one line per tag, "tag=path1;path2;". Paths that
+# do not exist are ignored. Tags used by offline_viewer.cpp:
+RECENT_FILES_INI = "/tmp/tmp_recent_files.ini"
+RECENT_TAG_OPEN = "offline_viewer_open"     # File → Open (Additional) Map
+RECENT_TAG_SAVE = "offline_viewer_save"     # File → Save → Save Map
+
 
 def now_utc() -> _dt.datetime:
     return _dt.datetime.now(_dt.timezone.utc)
@@ -157,6 +165,41 @@ def list_sessions(sessions_dir: str) -> List[dict]:
     return out
 
 
+def new_merged_name(existing: Sequence[str], when: Optional[_dt.datetime] = None) -> str:
+    base = "merged_" + (when or _dt.datetime.now()).strftime("%Y-%m-%d_%H%M%S")
+    name, n = base, 2
+    taken = set(existing)
+    while name in taken:
+        name = f"{base}_{n}"
+        n += 1
+    return name
+
+
+def seed_recent_files(ini_path: str, entries: Dict[str, str]) -> None:
+    """Put `entries` (tag → path) first in iridescence's recent-files ini so
+    the viewer's dialogs open there. Other tags and later history are kept."""
+    lines: Dict[str, str] = {}
+    try:
+        with open(ini_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                if not line:
+                    break  # the reader stops at the first empty line too
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    lines[k] = v
+    except OSError:
+        pass
+    for tag, path in entries.items():
+        rest = [p for p in lines.get(tag, "").split(";") if p and p != path]
+        lines[tag] = ";".join([path] + rest[:9]) + ";"
+    tmp = ini_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for k, v in lines.items():
+            f.write(f"{k}={v}\n")
+    os.replace(tmp, ini_path)
+
+
 def backup_name(active_path: str, when: Optional[_dt.datetime] = None) -> str:
     stem, ext = os.path.splitext(active_path)
     return f"{stem}.backup-{(when or _dt.datetime.now()).strftime('%Y-%m-%d_%H%M%S')}{ext}"
@@ -221,6 +264,7 @@ class Config:
     mapping_cmd: List[str] = field(default_factory=lambda: ["ros2", "run", "glim_ros", "glim_rosnode"])
     viewer_cmd: List[str] = field(default_factory=lambda: ["ros2", "run", "glim_ros", "offline_viewer"])
     log_lines: int = 40
+    recent_files_ini: str = RECENT_FILES_INI
 
 
 class Supervisor:
@@ -239,6 +283,8 @@ class Supervisor:
         self._started_wall: Optional[float] = None
         self._started_mono: Optional[float] = None
         self._export_tmp: Optional[str] = None
+        # Empty folder prepared for "Save Map" while the viewer is open.
+        self._save_target: Optional[str] = None
         self._log: Deque[str] = collections.deque(maxlen=cfg.log_lines)
         self._sessions_cache: List[dict] = []
         self._sessions_scanned = 0.0
@@ -253,12 +299,13 @@ class Supervisor:
         self._state, self._message = state, message
         self._on_change()
 
-    def _spawn(self, argv: List[str]) -> subprocess.Popen:
+    def _spawn(self, argv: List[str], cwd: Optional[str] = None) -> subprocess.Popen:
         self._log.clear()
         # Own process group, so SIGINT reaches `ros2 run` AND the program it
         # started; stdout is drained continuously so the pipe never blocks.
         proc = self._popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           stdin=subprocess.DEVNULL, start_new_session=True, text=True, bufsize=1)
+                           stdin=subprocess.DEVNULL, start_new_session=True, text=True, bufsize=1,
+                           cwd=cwd)
         if proc.stdout is not None:
             threading.Thread(target=self._drain, args=(proc,), daemon=True).start()
         return proc
@@ -327,16 +374,41 @@ class Supervisor:
                 path = self._resolve_session(session)
             except ValueError as e:
                 return False, str(e)
+            # A fresh, empty folder for "Save Map", and the dialogs pointed at
+            # the sessions directory: the file dialog does not list /tmp or
+            # /glim on its own, and it can only pick an existing folder.
+            target = os.path.join(self.cfg.sessions_dir, new_merged_name(os.listdir(self.cfg.sessions_dir)))
+            try:
+                os.makedirs(target)
+                seed_recent_files(self.cfg.recent_files_ini, {
+                    RECENT_TAG_SAVE: target,
+                    RECENT_TAG_OPEN: self.cfg.sessions_dir.rstrip("/") + "/",
+                })
+            except OSError as e:
+                print(f"glim_supervisor: could not prepare the save folder: {e}", flush=True)
             argv = list(self.cfg.viewer_cmd) + [path, "--config_path", self.cfg.config_path]
             try:
-                self._proc = self._spawn(argv)
+                self._proc = self._spawn(argv, cwd=self.cfg.sessions_dir)
             except OSError as e:
+                self._remove_if_empty(target)
                 self._set(STATE_ERROR, f"Could not start the offline viewer: {e}")
                 return False, self._message
             self._session = session
+            self._save_target = target if os.path.isdir(target) else None
             self._started_wall, self._started_mono = time.time(), time.monotonic()
-            self._set(STATE_VIEWER, f"Offline viewer open on {session}.")
+            self._set(STATE_VIEWER, f"Offline viewer open on {session}."
+                      + (f" Save merged maps to {target}." if self._save_target else ""))
             return True, session
+
+    @staticmethod
+    def _remove_if_empty(path: Optional[str]) -> bool:
+        if not path:
+            return False
+        try:
+            os.rmdir(path)  # only succeeds for an empty directory
+            return True
+        except OSError:
+            return False
 
     def close_viewer(self) -> tuple:
         with self._lock:
@@ -413,7 +485,16 @@ class Supervisor:
                 else:
                     self._set(STATE_ERROR, f"GLIM exited (code {code}) without a complete dump for {session}.")
             elif state == STATE_VIEWER:
-                self._set(STATE_IDLE, f"Offline viewer closed ({session}).")
+                target, self._save_target = self._save_target, None
+                if target and not self._remove_if_empty(target) and is_complete_dump(target):
+                    write_json(os.path.join(target, SESSION_META), {
+                        "kind": "merged",
+                        "opened_from": session,
+                        "finished_at": iso(time.time()),
+                    })
+                    self._set(STATE_IDLE, f"Offline viewer closed; saved map {os.path.basename(target)}.")
+                else:
+                    self._set(STATE_IDLE, f"Offline viewer closed ({session}).")
             elif state == STATE_EXPORTING:
                 tmp = self._export_tmp
                 self._export_tmp = None
@@ -447,9 +528,13 @@ class Supervisor:
                 "started_at": iso(self._started_wall) if self._started_wall else None,
                 "elapsed_s": round(elapsed, 1) if elapsed is not None else None,
                 "sessions_dir": self.cfg.sessions_dir,
-                "sessions": self._sessions_cache,
+                # The empty "Save Map" folder is not a session until something is saved.
+                "sessions": [x for x in self._sessions_cache
+                             if not (self._save_target and x["name"] == os.path.basename(self._save_target)
+                                     and not x["complete"])],
                 "active_map": active_map_info(self.cfg.active_map_path),
                 "log_tail": list(self._log)[-15:],
+                "save_target": self._save_target,
             }
 
 
