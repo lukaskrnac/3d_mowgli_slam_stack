@@ -1,84 +1,91 @@
 # Mowgli SLAM stack
 
-Docker-composed stack pre lokalizáciu kosačky voči `.ply` mape z GLIM-u,
-pomocou `VLP16` skenov a [rsasaki0109/lidar_localization_ros2](https://github.com/rsasaki0109/lidar_localization_ros2).
+Docker stack pre Velodyne VLP16, GLIM mapovanie a lokalizáciu voči GLIM mape.
+Vetva `main` spája GLIM supervisor, izoláciu TF lokalizátora, nástroje pre
+fusion_graph a Velodyne filter `min_range: 0.2` m.
 
-## Štruktúra repozitára
+## Images a spustenie
 
-```
-.
-├── docker-compose.yaml          # hlavný compose súbor, buildí a spúšťa všetky služby
-├── common/
-│   └── cyclonedds.xml           # zdieľaná DDS konfigurácia (mountuje sa do všetkých kontajnerov)
-├── velodyne/
-│   ├── Dockerfile               # image pre velodyne_driver (TODO: doplň podľa svojho pôvodného buildu)
-│   └── config/
-│       └── VLP16-velodyne_driver_node-params.yaml
-├── glim/
-│   ├── Dockerfile               # image pre GLIM (TODO: doplň podľa svojho pôvodného buildu)
-│   ├── config/                  # config_relocalization.json a pod.
-│   ├── ext_modules/             # libglim_relocalization.so a pod. (negitované, veľké binárky)
-│   └── dump/                    # výstupné mapy z GLIM po ukončení behu
-├── lidar_localization/
-│   ├── Dockerfile               # image pre lidar_localization_ros2 (hotový, buildí sa zo zdroja)
-│   └── config/
-│       └── lidar_localization.yaml
-├── maps/                        # sem patrí .ply mapa z GLIM-u (negitované, veľké súbory)
-└── .github/workflows/
-    └── docker-build.yml         # CI - overí, že sa všetky 3 images zbuildia
-```
-
-## Predpoklady
-
-- Doplniť skutočný obsah `velodyne/Dockerfile` a `glim/Dockerfile` (momentálne sú tam
-  len rozumné placeholdery) podľa toho, ako si pôvodne staval `vlp16_dds` a `glim_dds`.
-- Do `maps/garden_map/` nakopírovať `.ply` mapu vyprodukovanú GLIM-om.
-- Skontrolovať/upraviť `lidar_localization/config/lidar_localization.yaml`
-  (najmä `map_path`, `ndt_resolution`).
-
-## Build
+GitHub Actions na push do `main` zostaví a publikuje images `velodyne`, `glim`
+a `lidar_localization` do `ghcr.io/lukaskrnac/3d_mowgli_slam_stack/`.
+Tagy sú `latest` a `sha-<7 znakov commitu>`; PR buildy images nepublikujú.
+Po úspešnom builde nastav spoločný `SLAM_IMAGE_TAG` v `.env`, ak chceš pripnutú verziu.
 
 ```bash
-git clone <tento repozitár>
-cd mowgli-slam-stack
-docker compose build
+cp .env.example .env
+docker compose pull
+docker compose up -d velodyne_driver glim lidar_localization
 ```
 
-Alebo len jednu službu:
+Lokálny build: `docker compose build`. Cesty v `volumes` sú nastavené pre
+`/home/mowgli/mowglinext/docker/slam`; pred spustením musia existovať príslušné
+konfigurácie, mapa, launch súbor a `cyclonedds.xml`. Compose nemení ich obsah.
+Všetky služby používajú host sieť, CycloneDDS a `ROS_DOMAIN_ID=0`.
+
+PCAP test je voliteľný profil. Najprv zastav živý driver:
 
 ```bash
-docker compose build lidar_localization
-```
-
-## Beh
-
-Bežná prevádzka (živý VLP16 sken + lokalizácia voči mape):
-
-```bash
-docker compose up velodyne_driver lidar_localization
-```
-
-Test s nahratým `.pcap` súborom namiesto živého senzora
-(daj `example.pcap` a `run_pcap.sh` do `velodyne/`):
-
-```bash
+docker compose stop velodyne_driver
 docker compose --profile test up velodyne_pcap_test lidar_localization
 ```
 
-Spustenie GLIM-u (napr. ak chceš súbežnú odometriu/relokalizáciu):
+## GLIM supervisor
+
+GLIM sa spúšťa na požiadanie z GUI MowgliNext alebo cez
+`/glim_supervisor/start_mapping`. Supervisor riadi mapovanie, uloženie,
+offline viewer, spojenie máp a export aktívnej mapy.
+
+- Relácie: host `glim_sessions` → `/glim/sessions`.
+- Aktívna mapa: host `glim_dump/garden_map.ply`; GLIM ju vidí pod
+  `/glim/active_map/garden_map.ply`, lokalizátor pod `/maps/garden_map/garden_map.ply`.
+- Pri exporte sa zachovajú tri zálohy. Po výmene mapy reštartuj lokalizátor.
+- `stop_grace_period: 3m` dáva GLIM-u čas uložiť mapovanie.
+
+Podrobnosti: [GLIM supervisor](glim/supervisor/README.md).
+
+## Integrácia s MowgliNext fusion_graph
+
+Aktuálny compose zachováva nastavenie z vetvy `lidar-loc-no-tf`:
+
+- `/pcl_pose` je vo frame **`lidar_map`**. Prevod do `map` rieši kalibrácia
+  `/calibrate_lidar_map_node/start` na strane MowgliNext. `/initialpose` posielaj
+  vo frame `lidar_map`; mapa nemusí byť offline zarovnaná do ENU.
+- Extrinziku `base_link → lidar_link` publikuje MowgliNext URDF. Velodyne má
+  `frame_id: lidar_link`; lokalizátor má `publish_lidar_tf:=false`.
+- Vlastný launch `lidar_localization/launch/mowgli_lidar_localization.launch.py`
+  presmeruje `/tf` na `/lidar_localization/tf`. Tento remap ovplyvňuje aj TF listener;
+  používa sa Mode A (`enable_map_odom_tf:=false`), nie Mode B.
+- Dynamické TF na spoločnom `/tf` vlastní MowgliNext. Lokalizátor dodáva merania
+  `/pcl_pose` a diagnostiku `/alignment_status`.
+
+Build lokalizátora navyše obsahuje patch s parametrom `publish_tf` a používa
+pinnuté upstream commity. `publish_tf: false` vypne samotný broadcast; predvolene
+je `true`, takže existujúce host konfigurácie si zachovajú správanie s remapom.
+Compose naďalej načítava **host priečinok `slam/config`** cez pôvodný mount do
+`share/lidar_localization_ros2/param`, nie vzorový súbor z repozitára.
+
+`lidar_localization/config/lidar_localization.yaml` je voliteľná vzorová konfigurácia
+(v image `/config/lidar_localization.yaml`). Obsahuje vypnutie TF, publikovanie
+akceptovaných matchov a kovarianciu podľa fitness. Ak ju chceš použiť, pridaj launch
+argument `localization_param_dir:=/config/lidar_localization.yaml`; najprv prispôsob
+jej parametre svojej mape a inicializácii.
+
+Overenie v ROS prostredí kontajnera:
 
 ```bash
-docker compose --profile glim up glim
+ros2 param get /velodyne_transform_node min_range
+ros2 run tf2_ros tf2_echo base_link lidar_link
+ros2 topic echo /pcl_pose --field header.frame_id --once
+python3 /opt/tools/check_fusion_contract.py --duration 10 --pose-frame lidar_map --tf
 ```
 
-## Poznámky
+[Historické zadanie fusion_graph](docs/ZADANIE_fusion_graph.md) opisuje starší
+variant s offline zarovnanou mapou; jeho požiadavka na frame `map` nie je aktuálnym
+nastavením compose.
 
-- Všetky služby bežia s `network_mode: host` a rovnakým `ROS_DOMAIN_ID`
-  (nastaviteľné cez `.env`, pozri `ROS_DOMAIN_ID=` premennú v `docker-compose.yaml`),
-  aby DDS discovery cez multicast fungoval bez ďalšej konfigurácie na jednom stroji.
-- `lidar_localization` očakáva vstupný cloud na topicu `/cloud` - v `command:`
-  je preto remap `-r /cloud:=/velodyne_points`. Ak tvoj velodyne launch
-  publikuje pod iným názvom, uprav remap.
-- CI (`.github/workflows/docker-build.yml`) len overuje, že sa images zbuildia
-  (bez pushu). Pre publikovanie do registry (napr. GHCR) odkomentuj login/push
-  kroky vo workflowe.
+## Kontroly bez ROS
+
+```bash
+python3 -m unittest discover -s glim/supervisor -p 'test_*.py' -v
+docker compose config --quiet
+```

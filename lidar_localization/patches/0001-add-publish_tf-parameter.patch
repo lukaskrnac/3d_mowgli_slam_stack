@@ -1,0 +1,129 @@
+diff --git a/include/lidar_localization/lidar_localization_component.hpp b/include/lidar_localization/lidar_localization_component.hpp
+index 26e8d7f..365c8d5 100644
+--- a/include/lidar_localization/lidar_localization_component.hpp
++++ b/include/lidar_localization/lidar_localization_component.hpp
+@@ -398,6 +398,7 @@ public:
+   bool use_gtsam_smoother_{false};
+   bool enable_debug_{false};
+   bool enable_map_odom_tf_{false};
++  bool publish_tf_{true};
+   // AMCL-style odom bridge: the map -> odom offset composed from the last
+   // ACCEPTED scan match, frozen and rebroadcast (re-stamped) on every scan
+   // callback even while matches are rejected/lost, so map -> base_link stays
+@@ -661,6 +662,7 @@ public:
+     const builtin_interfaces::msg::Time & stamp,
+     const geometry_msgs::msg::Pose & pose);
+   void publishPathMessage();
++  void sendTransformIfEnabled(const geometry_msgs::msg::TransformStamped & transform);
+   bool publishPoseTransform(
+     const builtin_interfaces::msg::Time & stamp,
+     const geometry_msgs::msg::Pose & pose,
+diff --git a/src/component_lifecycle.cpp b/src/component_lifecycle.cpp
+index b473096..0fe8ba7 100644
+--- a/src/component_lifecycle.cpp
++++ b/src/component_lifecycle.cpp
+@@ -10,6 +10,9 @@ PCLLocalization::PCLLocalization(const rclcpp::NodeOptions & options)
+   declare_parameter("odom_frame_id", "odom");
+   declare_parameter("base_frame_id", "base_link");
+   declare_parameter("enable_map_odom_tf", false);
++  // false: compute and publish /pcl_pose only, never broadcast any TF (for
++  // setups where an external estimator owns map -> odom -> base).
++  declare_parameter("publish_tf", true);
+   declare_parameter("use_odom_tf_prediction", false);
+   declare_parameter("constrain_odom_tf_prediction_to_planar", false);
+   declare_parameter("constrain_odom_tf_prediction_height_only", false);
+diff --git a/src/component_parameters.cpp b/src/component_parameters.cpp
+index fe64003..323ac43 100644
+--- a/src/component_parameters.cpp
++++ b/src/component_parameters.cpp
+@@ -156,6 +156,7 @@ void PCLLocalization::initializeParameters()
+   get_parameter("odom_frame_id", odom_frame_id_);
+   get_parameter("base_frame_id", base_frame_id_);
+   get_parameter("enable_map_odom_tf", enable_map_odom_tf_);
++  get_parameter("publish_tf", publish_tf_);
+   get_parameter("use_odom_tf_prediction", use_odom_tf_prediction_);
+   get_parameter(
+     "constrain_odom_tf_prediction_to_planar",
+@@ -473,6 +474,7 @@ void PCLLocalization::initializeParameters()
+   RCLCPP_INFO(get_logger(),"odom_frame_id: %s", odom_frame_id_.c_str());
+   RCLCPP_INFO(get_logger(),"base_frame_id: %s", base_frame_id_.c_str());
+   RCLCPP_INFO(get_logger(),"enable_map_odom_tf: %d", enable_map_odom_tf_);
++  RCLCPP_INFO(get_logger(),"publish_tf: %d", publish_tf_);
+   RCLCPP_INFO(get_logger(),"use_odom_tf_prediction: %d", use_odom_tf_prediction_);
+   RCLCPP_INFO(
+     get_logger(), "constrain_odom_tf_prediction_to_planar: %d",
+diff --git a/src/component_pose_publisher.cpp b/src/component_pose_publisher.cpp
+index 6221f7e..af085cd 100644
+--- a/src/component_pose_publisher.cpp
++++ b/src/component_pose_publisher.cpp
+@@ -34,7 +34,7 @@ void PCLLocalization::publishCurrentPose(
+     publishBridgePoseAsRejectedOutput(stamp);
+     geometry_msgs::msg::TransformStamped frozen = last_good_map_to_odom_;
+     frozen.header.stamp = stamp;
+-    broadcaster_.sendTransform(frozen);
++    sendTransformIfEnabled(frozen);
+     return;
+   }
+   publishPoseMessage(*corrent_pose_with_cov_stamped_ptr_);
+@@ -80,7 +80,7 @@ bool PCLLocalization::publishPoseTransform(
+       base_frame_id_,
+       pose);
+   if (!enable_map_odom_tf_) {
+-    broadcaster_.sendTransform(map_to_base_link_stamped);
++    sendTransformIfEnabled(map_to_base_link_stamped);
+     return true;
+   }
+ 
+@@ -109,7 +109,7 @@ bool PCLLocalization::publishMapToOdomTransform(
+       odom_frame_id_,
+       map_to_base_link_stamped,
+       odom_to_base_link_msg);
+-  broadcaster_.sendTransform(map_to_odom);
++  sendTransformIfEnabled(map_to_odom);
+   // Freeze this map -> odom offset so republishFrozenMapToOdomTransform can keep
+   // it alive (re-stamped) through a dropout. Only called from accepted-match /
+   // accepted-reset call sites (see publishPoseTransform's default and its one
+@@ -143,7 +143,7 @@ void PCLLocalization::republishFrozenMapToOdomTransform(
+   }
+   geometry_msgs::msg::TransformStamped frozen = last_good_map_to_odom_;
+   frozen.header.stamp = stamp;
+-  broadcaster_.sendTransform(frozen);
++  sendTransformIfEnabled(frozen);
+   publishOdomBridgePose(stamp, frozen);
+ }
+ 
+@@ -436,8 +436,17 @@ void PCLLocalization::timerPublishPose()
+     // callback budget while /clock is slightly ahead of GLIM's newest TF.
+     geometry_msgs::msg::TransformStamped frozen = last_good_map_to_odom_;
+     frozen.header.stamp = pose_copy.header.stamp;
+-    broadcaster_.sendTransform(frozen);
++    sendTransformIfEnabled(frozen);
+   } else {
+     publishPoseTransform(pose_copy.header.stamp, pose_copy.pose.pose, false);
+   }
+ }
++
++void PCLLocalization::sendTransformIfEnabled(
++  const geometry_msgs::msg::TransformStamped & transform)
++{
++  if (!publish_tf_) {
++    return;
++  }
++  broadcaster_.sendTransform(transform);
++}
+diff --git a/src/component_subscribers.cpp b/src/component_subscribers.cpp
+index e352c43..1cd0678 100644
+--- a/src/component_subscribers.cpp
++++ b/src/component_subscribers.cpp
+@@ -307,7 +307,10 @@ void PCLLocalization::initialPoseReceived(const geometry_msgs::msg::PoseWithCova
+     }
+   }
+   pose_pub_->publish(*corrent_pose_with_cov_stamped_ptr_);
+-  if (publishPoseTransform(msg->header.stamp, corrent_pose_with_cov_stamped_ptr_->pose.pose)) {
++  if (
++    publishPoseTransform(msg->header.stamp, corrent_pose_with_cov_stamped_ptr_->pose.pose) &&
++    publish_tf_)
++  {
+     if (enable_map_odom_tf_) {
+       RCLCPP_INFO(
+         get_logger(),

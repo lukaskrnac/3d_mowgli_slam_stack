@@ -6,7 +6,8 @@ services:
     # Dočasný service na test s example.pcap namiesto živého senzora.
   # Vypni "velodyne_driver" (zakomentuj) kým testuješ toto, aby si nekolidovali na UDP porte 2368.
   velodyne_driver:
-    image: vlp16_dds:latest   # pomenovanie lokálneho image, nech je to jasné
+    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/velodyne:${SLAM_IMAGE_TAG:-latest}
+    build: ./velodyne
     container_name: velodyne_vlp16
     network_mode: host                  # VLP16 komunikuje cez UDP na LAN
     environment:
@@ -23,7 +24,8 @@ services:
                ros2 launch velodyne velodyne-all-nodes-VLP16-launch.py"
                
   velodyne_pcap_test:
-    image: vlp16_dds:latest   # rovnaký image ako velodyne_driver, nič nové sa nebuilduje
+    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/velodyne:${SLAM_IMAGE_TAG:-latest}
+    profiles: [test]
     container_name: velodyne_pcap_test
     network_mode: host
     environment:
@@ -40,7 +42,8 @@ services:
 
 
   glim:
-    image: glim_dds:latest     # BEZ CUDA - výrazne menší image. Ak máš NVIDIA GPU a chceš zrýchlenie, prepni na jazzy_cuda13.1 (ale ráta s +3-4 GB navyše)
+    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/glim:${SLAM_IMAGE_TAG:-latest}
+    build: ./glim
     container_name: glim_slam
     network_mode: host
     environment:
@@ -72,14 +75,32 @@ services:
       # NOVÉ - referenčná (prebuilt) mapa, na ktorú sa modul relokalizuje.
       # Cesta VPRAVO musí presne sedieť s "map_path" v config_relocalization.json!
       - /home/mowgli/mowglinext/docker/slam/glim_maps/garden_map:/glim/maps/garden_map:ro
-      # cesta ku ulozenej mape po ukoncieni
-      - /home/mowgli/mowglinext/docker/slam/glim_dump:/tmp/dump
+      # Každé mapovanie = nový priečinok glim_sessions/mapping_<dátum_čas>/.
+      # Sem ukladaj aj spojené mapy z offline viewera (Save Map), objavia sa v GUI.
+      - /home/mowgli/mowglinext/docker/slam/glim_sessions:/glim/sessions
+      # Aktívna mapa pre lidar_localization (ten istý priečinok má lokalizátor
+      # ako /maps/garden_map). Zapisuje sem LEN export z GUI; predchádzajúca
+      # mapa ostane ako garden_map.backup-<dátum_čas>.ply.
+      # Pozor: už NIE /tmp/dump — dump tu prepisoval mapu lokalizátora.
+      - /home/mowgli/mowglinext/docker/slam/glim_dump:/glim/active_map
     restart: unless-stopped
-    command: ros2 run glim_ros glim_rosnode --ros-args -p config_path:=/glim/config
+    # docker stop počas mapovania: supervisor nechá GLIM uložiť dump, na to
+    # treba viac ako predvolených 10 s.
+    stop_grace_period: 3m
+    # Supervisor (glim/supervisor/glim_supervisor.py). GLIM sám nebeží, kým ho
+    # nespustíš z GUI (Diagnostika → Kalibrácia → Mapovanie GLIM) alebo:
+    #   ros2 service call /glim_supervisor/start_mapping std_srvs/srv/Trigger
+    command: >
+      python3 /opt/glim_supervisor/glim_supervisor.py --ros-args
+      -p config_path:=/glim/config
+      -p sessions_dir:=/glim/sessions
+      -p active_map_path:=/glim/active_map/garden_map.ply
+      -p keep_backups:=3
 
 
   lidar_localization:
-    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/lidar_localization:sha-886f67c
+    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/lidar_localization:${SLAM_IMAGE_TAG:-latest}
+    build: ./lidar_localization
     container_name: lidar_localization
     network_mode: host
     environment:
@@ -91,6 +112,21 @@ services:
       - /home/mowgli/mowglinext/docker/slam/config:/opt/lidarloc_ws/install/lidar_localization_ros2/share/lidar_localization_ros2/param:ro
       - /home/mowgli/mowglinext/docker/slam/glim_dump:/maps/garden_map:ro
       - /home/mowgli/mowglinext/docker/config/cyclonedds.xml:/cyclonedds.xml:ro
+      # Upravený launch: TF výstup ide na /lidar_localization/tf (nie /tf), aby
+      # nekolidoval s map -> odom z fusion_graph v MowgliNext. Pozri hlavičku súboru.
+      - ./lidar_localization/launch/mowgli_lidar_localization.launch.py:/opt/mowgli_launch/mowgli_lidar_localization.launch.py:ro
     restart: unless-stopped
+    # Extrinziku base_link -> lidar_link publikuje MowgliNext (URDF, robot_state_publisher,
+    # hodnoty lidar_x/y/z/yaw v mowgli_robot.yaml). Tu sa preto žiadny statický TF
+    # nepublikuje a VLP16 musí mať frame_id: lidar_link.
+    # global_frame_id:=lidar_map — lokalizácia beží vo vlastnom rámci GLIM mapy;
+    # MowgliNext (fusion_graph) ju prepočíta do `map` podľa kalibrácie
+    # /calibrate_lidar_map_node (docs/LIDAR_MAP_CALIBRATION.md vo forku).
+    # /initialpose preto posielaj vo frame lidar_map.
     command: >
-      bash -c "ros2 launch lidar_localization_ros2 lidar_localization.launch.py"
+      bash -c "ros2 launch /opt/mowgli_launch/mowgli_lidar_localization.launch.py
+      tf_topic:=/lidar_localization/tf
+      enable_map_odom_tf:=false
+      publish_lidar_tf:=false
+      lidar_frame_id:=lidar_link
+      global_frame_id:=lidar_map"
