@@ -6,8 +6,7 @@ services:
     # Dočasný service na test s example.pcap namiesto živého senzora.
   # Vypni "velodyne_driver" (zakomentuj) kým testuješ toto, aby si nekolidovali na UDP porte 2368.
   velodyne_driver:
-    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/velodyne:${SLAM_IMAGE_TAG:-latest}
-    build: ./velodyne
+    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/velodyne:latest
     container_name: velodyne_vlp16
     network_mode: host                  # VLP16 komunikuje cez UDP na LAN
     environment:
@@ -24,8 +23,7 @@ services:
                ros2 launch velodyne velodyne-all-nodes-VLP16-launch.py"
                
   velodyne_pcap_test:
-    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/velodyne:${SLAM_IMAGE_TAG:-latest}
-    profiles: [test]
+    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/velodyne:latest
     container_name: velodyne_pcap_test
     network_mode: host
     environment:
@@ -34,6 +32,7 @@ services:
       - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
       - ROS_DOMAIN_ID=0    
     volumes:
+      - /home/mowgli/mowglinext/docker/slam/velodyne/config/VLP16-velodyne_driver_node-params.yaml:/opt/ros/kilted/share/velodyne_driver/config/VLP16-velodyne_driver_node-params.yaml:ro
       - /home/mowgli/mowglinext/docker/slam/example.pcap:/data/example.pcap:ro   # daj sem cestu k svojmu example.pcap súboru
       - /home/mowgli/mowglinext/docker/slam/run_pcap.sh:/opt/run_pcap.sh:ro
       - /home/mowgli/mowglinext/docker/config/cyclonedds.xml:/cyclonedds.xml:ro
@@ -42,8 +41,7 @@ services:
 
 
   glim:
-    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/glim:${SLAM_IMAGE_TAG:-latest}
-    build: ./glim
+    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/glim:latest
     container_name: glim_slam
     network_mode: host
     environment:
@@ -99,8 +97,7 @@ services:
 
 
   lidar_localization:
-    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/lidar_localization:${SLAM_IMAGE_TAG:-latest}
-    build: ./lidar_localization
+    image: ghcr.io/lukaskrnac/3d_mowgli_slam_stack/lidar_localization:latest
     container_name: lidar_localization
     network_mode: host
     environment:
@@ -114,7 +111,7 @@ services:
       - /home/mowgli/mowglinext/docker/config/cyclonedds.xml:/cyclonedds.xml:ro
       # Upravený launch: TF výstup ide na /lidar_localization/tf (nie /tf), aby
       # nekolidoval s map -> odom z fusion_graph v MowgliNext. Pozri hlavičku súboru.
-      - ./lidar_localization/launch/mowgli_lidar_localization.launch.py:/opt/mowgli_launch/mowgli_lidar_localization.launch.py:ro
+      - /home/mowgli/mowglinext/docker/slam/lidar_localization/launch/mowgli_lidar_localization.launch.py:/opt/mowgli_launch/mowgli_lidar_localization.launch.py:ro
     restart: unless-stopped
     # Extrinziku base_link -> lidar_link publikuje MowgliNext (URDF, robot_state_publisher,
     # hodnoty lidar_x/y/z/yaw v mowgli_robot.yaml). Tu sa preto žiadny statický TF
